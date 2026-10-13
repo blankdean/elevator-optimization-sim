@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+out/
+.DS_Store
+
+# Local learning and assignment reference files
+/private/
+/Take_home_Elevator.pdf
+/docs/
