@@ -6,12 +6,13 @@ import json
 import sys
 from pathlib import Path
 
+from .dispatcher import DISPATCHERS
 from .domain import Request, SimulationConfig
 from .reporting import terminal_summary, write_result
-from .scheduler import DISPATCHERS, STOP_SCHEDULERS
+from .scheduler import STOP_SCHEDULERS
 from .simulation import simulate
 
-EXAMPLES = ("tiny", "mixed", "shared", "capacity", "stress")
+EXAMPLES = ("tiny", "mixed", "stress")
 
 
 def choose_option(title, options):
@@ -30,8 +31,8 @@ def choose_option(title, options):
 def interactive_args():
     example = choose_option("Example", EXAMPLES)
     dispatcher = choose_option("Dispatcher", DISPATCHERS)
-    print("\nStop scheduler: LOOK")
-    return [example, "--dispatcher", dispatcher]
+    stop_scheduler = choose_option("Stop scheduler", STOP_SCHEDULERS)
+    return [example, "--dispatcher", dispatcher, "--stop-scheduler", stop_scheduler]
 
 
 def load_requests(path):
@@ -69,7 +70,7 @@ def load_config(path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="LOOK elevator simulation; times are ticks."
+        description="Elevator simulation with LOOK or FIFO stops; times are ticks."
     )
     parser.add_argument(
         "example",
@@ -83,7 +84,10 @@ def main(argv=None):
         "--config",
         help="Building JSON (default: basic.json, or stress.json for stress)",
     )
-    parser.add_argument("--output", help="Report directory (default: out/<example>)")
+    parser.add_argument(
+        "--output",
+        help="Report directory (default: out/<scenario>/<scheduler>/<dispatcher>)",
+    )
     parser.add_argument(
         "--dispatcher",
         choices=DISPATCHERS,
@@ -99,9 +103,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         requests_path = args.requests or f"examples/requests/{args.example}.csv"
-        output_path = args.output or f"out/{args.example}"
         config_name = "stress" if args.example == "stress" else "basic"
         config_path = args.config or f"examples/configs/{config_name}.json"
+        workload, building = Path(requests_path).stem, Path(config_path).stem
+        scenario = workload if workload == building else f"{workload}-{building}"
+        output_path = (
+            args.output
+            or Path("out") / scenario / args.stop_scheduler / args.dispatcher
+        )
         result = simulate(
             load_requests(requests_path),
             load_config(config_path),
@@ -110,6 +119,7 @@ def main(argv=None):
         )
         write_result(result, output_path)
         print(terminal_summary(result))
+        print(f"Reports saved to {output_path}")
     except (ValueError, TypeError, KeyError, OSError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

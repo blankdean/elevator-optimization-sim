@@ -7,8 +7,8 @@ dist/
 *.egg-info/
 out/
 .DS_Store
+.vscode/
 
 # Local learning and assignment reference files
-/private/
 /Take_home_Elevator.pdf
 /docs/

@@ -1,64 +1,6 @@
-"""Dispatch chooses an elevator; stop scheduling orders that elevator's visits."""
+"""Plan the order of an elevator's pickups and drop-offs."""
 
-from .domain import Stop
-
-
-def direction(source, dest):
-    """Return 1 for up, -1 for down, or 0 for the same floor."""
-    return (dest > source) - (dest < source)
-
-
-def dispatch_nearest_car(cars, request, plan_stops=None):
-    """Choose the closest current floor; equal distances use elevator order."""
-    return min(cars, key=lambda car: abs(car.floor - request.source))
-
-
-def dispatch_direction_aware(cars, request, plan_stops=None):
-    """Choose the nearest idle car or one approaching in the rider's direction."""
-    trip_direction = direction(request.source, request.dest)
-    candidates = []
-    for car in cars:
-        idle = not car.route and not car.onboard
-        same_direction = car.direction == trip_direction
-        pickup_ahead = direction(car.floor, request.source) in (0, car.direction)
-        if idle or (same_direction and pickup_ahead):
-            candidates.append(car)
-    # If every car is unsuitable, still assign the request to the nearest one.
-    return dispatch_nearest_car(candidates or cars, request)
-
-
-def route_arrival_times(car, route):
-    """Predict ticks until each drop-off by adding the distances between stops."""
-    floor = car.floor
-    elapsed = 0
-    arrivals = {}
-    for stop in route:
-        elapsed += abs(stop.floor - floor)
-        for passenger_id in stop.dropoffs:
-            arrivals[passenger_id] = elapsed
-        floor = stop.floor
-    return arrivals
-
-
-def added_time_cost(car, request, new_route):
-    """New rider's total time plus the change in all existing riders' arrival times."""
-    before = route_arrival_times(car, car.route)
-    after = route_arrival_times(car, new_route)
-    existing_delay = sum(after[pid] - before[pid] for pid in before)
-    return after[request.id] + existing_delay
-
-
-def dispatch_lowest_cost(cars, request, plan_stops):
-    """Try the new passenger in each car and choose the least added total time."""
-    chosen = None
-    lowest_cost = None
-    for car in cars:
-        new_route = plan_stops(car, request)
-        cost = added_time_cost(car, request, new_route)
-        if lowest_cost is None or cost < lowest_cost:
-            chosen = car
-            lowest_cost = cost
-    return chosen
+from .domain import Stop, direction
 
 
 def target_floors(trips, waiting, onboard, capacity):
@@ -69,8 +11,8 @@ def target_floors(trips, waiting, onboard, capacity):
     return targets
 
 
-def schedule_look_stops(car, passengers, capacity):
-    """Plan stops for this car's assigned riders, without moving the real car."""
+def assigned_trips(car, passengers):
+    """Collect this car's active requests in arrival order."""
     trips = {}
     waiting = []
     for passenger in passengers.values():
@@ -79,7 +21,12 @@ def schedule_look_stops(car, passengers, capacity):
         trips[passenger.request.id] = passenger.request
         if passenger.boarding_time is None:
             waiting.append(passenger.request.id)
+    return trips, waiting
 
+
+def schedule_look_stops(car, passengers, capacity):
+    """Plan stops for this car's assigned riders, without moving the real car."""
+    trips, waiting = assigned_trips(car, passengers)
     # Work on copies: boarding and movement here are predictions.
     onboard = list(car.onboard)
     floor, sweep = car.floor, car.direction
@@ -133,16 +80,64 @@ def schedule_look_stops(car, passengers, capacity):
         if ahead:
             floor = min(ahead, key=lambda target: abs(target - floor))
         elif waiting or onboard:
-            if onboard:
-                raise ValueError("LOOK encountered an occupied reversal")
             sweep = -sweep
     return route
 
 
-# Add another function and a name here when you want to try another method.
-DISPATCHERS = {
-    "nearest-car": dispatch_nearest_car,
-    "direction-aware": dispatch_direction_aware,
-    "cost": dispatch_lowest_cost,
-}
-STOP_SCHEDULERS = {"look": schedule_look_stops}
+def schedule_fifo_stops(car, passengers, capacity):
+    """Serve the oldest waiting request next, sharing pickups along its trip."""
+    trips, waiting = assigned_trips(car, passengers)
+    onboard = list(car.onboard)
+    floor = car.floor
+    route = []
+
+    while waiting or onboard:
+        # 1. Drop off riders here before planning any pickups.
+        dropoffs = [pid for pid in onboard if trips[pid].dest == floor]
+        for pid in dropoffs:
+            onboard.remove(pid)
+        if dropoffs:
+            route.append(Stop(floor, dropoffs=tuple(dropoffs)))
+
+        # 2. When empty, go straight to the oldest waiting rider.
+        if not onboard:
+            if not waiting:
+                break
+            oldest = trips[waiting[0]]
+            floor = oldest.source
+            sweep = direction(floor, oldest.dest)
+        else:
+            sweep = direction(floor, trips[onboard[0]].dest)
+
+        # 3. Share this trip with compatible riders here, while seats remain.
+        pickups = []
+        for pid in waiting[:]:
+            trip = trips[pid]
+            if (
+                trip.source == floor
+                and direction(floor, trip.dest) == sweep
+                and len(onboard) < capacity
+            ):
+                pickups.append(pid)
+                onboard.append(pid)
+                waiting.remove(pid)
+        if pickups:
+            route.append(Stop(floor, pickups=tuple(pickups)))
+
+        # 4. Visit drop-offs and compatible pickups before the last destination.
+        targets = [trips[pid].dest for pid in onboard]
+        last_floor = max(targets, key=lambda target: abs(target - floor))
+        if len(onboard) < capacity:
+            for pid in waiting:
+                trip = trips[pid]
+                if (
+                    direction(floor, trip.source) == sweep
+                    and direction(trip.source, trip.dest) == sweep
+                    and abs(trip.source - floor) <= abs(last_floor - floor)
+                ):
+                    targets.append(trip.source)
+        floor = min(targets, key=lambda target: abs(target - floor))
+    return route
+
+
+STOP_SCHEDULERS = {"look": schedule_look_stops, "fifo": schedule_fifo_stops}
