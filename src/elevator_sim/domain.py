@@ -93,6 +93,11 @@ class SimulationResult:
     stop_scheduler: str = "look"
 
 
+def direction(source, dest):
+    """Return 1 for up, -1 for down, or 0 for the same floor."""
+    return (dest > source) - (dest < source)
+
+
 def integer(value, name, minimum=0):
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ValueError(f"{name} must be an integer >= {minimum}")

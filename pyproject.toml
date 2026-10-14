@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "elevator-sim"
 version = "0.1.0"
-description = "A discrete-time elevator simulation using LOOK scheduling"
+description = "A discrete-time elevator simulation using LOOK and FIFO scheduling"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
@@ -15,6 +15,7 @@ elevator-sim = "elevator_sim.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+reports = ["matplotlib>=3.8", "seaborn>=0.13", "ipykernel>=6"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/elevator_sim"]

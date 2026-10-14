@@ -1,53 +1,55 @@
 # Elevator simulation
 
-A discrete-time Python simulation with LOOK stop scheduling and three dispatchers.
+A discrete-time simulation with three dispatchers and LOOK or FIFO stop scheduling.
 
 ## Run
 
-Requires **Python 3.11+**. No dependencies or installation needed. From the repo directory:
+Requires **Python 3.11+**, with no runtime dependencies. From the repo directory:
 
 ```sh
 python3 run.py
 ```
 
-Choose an example and dispatcher from the numbered menus. On Windows, use `py run.py`.
-To skip the menus:
+Choose an example, dispatcher, and scheduler from the numbered menus.
+On Windows, use `py run.py`. To skip the menus:
 
 ```sh
-python3 run.py mixed --dispatcher nearest-car
-python3 run.py mixed --dispatcher direction-aware
-python3 run.py stress --dispatcher cost
+python3 run.py mixed --dispatcher cost --stop-scheduler fifo
 ```
 
-Stress runs 1,000 requests across 60 floors and 12 elevators, each with 8 seats.
-Edit `examples/configs/basic.json` for smaller examples or `stress.json` for stress.
-Use `python3 run.py --help` for custom input and output options.
+Examples: `tiny` for tracing, `mixed` for comparison, and `stress` for load.
+Stress has 1,000 requests, 60 floors, and 12 elevators with 8 seats each.
+Edit `examples/configs/basic.json` or `stress.json` to change the building.
+Use `python3 run.py --help` for custom CSV input and output options.
 
-## How it works
+## Architecture
 
-- **Nearest-car:** assign the elevator closest to the pickup floor.
-- **Direction-aware:** prefer idle cars or cars approaching in the rider's direction;
-  otherwise use nearest-car.
-- **Cost:** preview each elevator's LOOK route and minimize the new rider's total
-  time plus the change in arrival times for its existing riders.
-- **LOOK:** serve pickups and destinations along a directional sweep, respecting
-  capacity. Turn around only when empty.
+```mermaid
+flowchart LR
+    simulator["Simulator · simulation.py<br/>Owns state and runs each tick"]
+    dispatcher["Dispatcher · dispatcher.py<br/>Chooses an elevator"]
+    scheduler["Scheduler · scheduler.py<br/>Orders pickups and drop-offs"]
+    simulator -->|Request and car state| dispatcher
+    dispatcher -->|Chosen elevator| simulator
+    simulator -->|Assigned riders and car state| scheduler
+    scheduler -->|Planned stops| simulator
+```
 
-## Assumptions
+Dispatchers: **nearest-car**, **direction-aware**, and **cost**. Cost minimizes
+predicted added passenger time (waiting plus riding). Schedulers: **LOOK** follows
+its sweep; **FIFO** starts with the oldest waiting request. Both support shared rides.
 
-- Floors and request times are integers; one tick represents one floor of travel.
-- Identical elevators start at floor 1, serve every floor, and stay put when idle.
+## Assumptions and output
+
+- Cars start at floor 1, serve every floor, and move one floor per tick.
 - Boarding and exiting are instantaneous; riders exit before others board.
-- Requests provide both floors and keep their assigned elevator; there are no transfers.
-- Capacity is enforced. Riders share a travel direction; occupied cars never reverse.
-- Dispatchers use only arrived requests. The input is finite and every rider is served.
-- Dispatchers are heuristics, with no guarantee of a globally optimal schedule.
+- Assignments are fixed, capacity is respected, and occupied cars never reverse.
+- Only arrived requests affect decisions. Finite inputs are fully served.
+- Policies are heuristics, with no guarantee of a globally optimal schedule.
 
-## Output
-
-Results go to `out/<example>/`: `positions.csv` records every elevator each tick;
-`summary.json` records minimum, maximum, and average wait and total times.
-Wait is request-to-boarding time; total is request-to-arrival time.
+Reports go to `out/<scenario>/<scheduler>/<dispatcher>/`: `positions.csv` records
+positions each tick; `summary.json` reports minimum, maximum, and average wait and
+total passenger times.
 
 ## Tests
 

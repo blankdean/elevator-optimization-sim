@@ -2,16 +2,18 @@
 
 from dataclasses import dataclass, field
 
+from .dispatcher import DISPATCHERS
 from .domain import (
     PassengerOutcome,
     PositionRow,
     Request,
     SimulationResult,
     Stop,
+    direction,
     summarize,
     validate_inputs,
 )
-from .scheduler import DISPATCHERS, STOP_SCHEDULERS, direction
+from .scheduler import STOP_SCHEDULERS
 
 
 @dataclass
@@ -31,7 +33,24 @@ class PassengerState:
     arrival_time: int | None = None
 
 
-def serve(car, passengers, capacity, time):
+def assign_request(request, cars, passengers, capacity, dispatcher, stop_scheduler):
+    """Choose a car, assign the rider, and update that car's stops."""
+    dispatch = DISPATCHERS[dispatcher]
+    schedule_stops = STOP_SCHEDULERS[stop_scheduler]
+    if dispatcher == "cost":
+        routes = {}
+        for car in cars:
+            preview = dict(passengers)
+            preview[request.id] = PassengerState(request, car.id)
+            routes[car.id] = schedule_stops(car, preview, capacity)
+        car = dispatch(cars, request, routes)
+    else:
+        car = dispatch(cars, request)
+    passengers[request.id] = PassengerState(request, car.id)
+    car.route = schedule_stops(car, passengers, capacity)
+
+
+def serve(car, passengers, time):
     stops = []
     while car.route and car.route[0].floor == car.floor:
         stops.append(car.route.pop(0))
@@ -43,39 +62,23 @@ def serve(car, passengers, capacity, time):
     for stop in stops:
         for pid in stop.pickups:
             passenger = passengers[pid]
-            if len(car.onboard) >= capacity:
-                raise ValueError(f"{car.id}: capacity exceeded")
-            trip_direction = direction(car.floor, passenger.request.dest)
-            if any(
-                direction(car.floor, passengers[other].request.dest) != trip_direction
-                for other in car.onboard
-            ):
-                raise ValueError(f"{car.id}: incompatible passenger directions")
             car.onboard.append(pid)
-            car.direction = trip_direction
+            car.direction = direction(car.floor, passenger.request.dest)
             passenger.boarding_time = time
 
 
-def move(car, passengers):
+def move(car):
     if not car.route:
         return
-    next_direction = direction(car.floor, car.route[0].floor)
-    if any(
-        direction(car.floor, passengers[pid].request.dest) != next_direction
-        for pid in car.onboard
-    ):
-        raise ValueError(f"{car.id}: occupied car cannot reverse")
-    car.direction = next_direction
-    car.floor += next_direction
+    car.direction = direction(car.floor, car.route[0].floor)
+    car.floor += car.direction
 
 
 def simulate(requests, config, *, dispatcher="nearest-car", stop_scheduler="look"):
     """Immediately assign each arriving request and finish when everyone exits."""
-    dispatch = DISPATCHERS.get(dispatcher)
-    if dispatch is None:
+    if dispatcher not in DISPATCHERS:
         raise ValueError(f"unknown dispatcher: {dispatcher}")
-    schedule_stops = STOP_SCHEDULERS.get(stop_scheduler)
-    if schedule_stops is None:
+    if stop_scheduler not in STOP_SCHEDULERS:
         raise ValueError(f"unknown stop scheduler: {stop_scheduler}")
     requests = validate_inputs(requests, config)
     cars = [CarState(f"e{index + 1}") for index in range(config.elevator_count)]
@@ -84,30 +87,34 @@ def simulate(requests, config, *, dispatcher="nearest-car", stop_scheduler="look
     index = 0
     time = 0
 
-    def plan_stops(car, request):
-        """Preview an assignment on a copy, without assigning anyone for real."""
-        preview = dict(passengers)
-        preview[request.id] = PassengerState(request, car.id)
-        return schedule_stops(car, preview, config.capacity)
-
     while True:
-        # The scheduler receives only requests whose timestamp has arrived.
+        # 1. Release and assign requests arriving on this tick.
         while index < len(requests) and requests[index].time == time:
-            request = requests[index]
-            # Dispatch picks the car. LOOK then orders that car's stops.
-            car = dispatch(cars, request, plan_stops)
-            passengers[request.id] = PassengerState(request, car.id)
-            car.route = schedule_stops(car, passengers, config.capacity)
+            assign_request(
+                requests[index],
+                cars,
+                passengers,
+                config.capacity,
+                dispatcher,
+                stop_scheduler,
+            )
             index += 1
+
+        # 2. Drop off and board passengers at each car's current floor.
         for car in cars:
-            serve(car, passengers, config.capacity, time)
+            serve(car, passengers, time)
+
+        # 3. Record positions, including the final tick.
         positions.append(PositionRow(time, tuple(car.floor for car in cars)))
-        if index == len(requests) and all(
+        finished = index == len(requests) and all(
             passenger.arrival_time is not None for passenger in passengers.values()
-        ):
+        )
+        if finished:
             break
+
+        # 4. Move each car one floor, then advance time.
         for car in cars:
-            move(car, passengers)
+            move(car)
         time += 1
     outcomes = tuple(
         PassengerOutcome(
